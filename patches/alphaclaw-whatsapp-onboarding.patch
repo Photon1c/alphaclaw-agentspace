@@ -1,0 +1,583 @@
+diff --git a/README.md b/README.md
+index 9033afe..bd4c1a7 100644
+--- a/README.md
++++ b/README.md
+@@ -30,7 +30,7 @@
+ - **Guided Onboarding:** Step-by-step setup wizard — model selection, provider credentials, GitHub repo, channel pairing.
+ - **Gateway Manager:** Spawns, monitors, restarts, and proxies the OpenClaw gateway as a managed child process.
+ - **Watchdog:** Crash detection, crash-loop recovery, auto-repair (`openclaw doctor --fix`), and Telegram/Discord notifications.
+-- **Channel Orchestration:** Telegram and Discord bot pairing, credential sync, and a guided wizard for splitting Telegram into multi-threaded topic groups as your usage grows.
++- **Channel Orchestration:** Telegram, Discord, and WhatsApp pairing support, credential sync, and a guided wizard for splitting Telegram into multi-threaded topic groups as your usage grows.
+ - **Webhooks:** Named webhook endpoints with per-hook transform modules, request logging, and payload inspection.
+ - **Google Workspace:** OAuth integration for Gmail, Calendar, Drive, Docs, Sheets, Tasks, Contacts, and Meet, plus guided Gmail watch setup with Google Pub/Sub topic, subscription, and push endpoint handling.
+ - **File Explorer:** Browser-based workspace explorer with file visibility, inline edits, diff view, and Git-aware sync for quick fixes without SSH.
+@@ -143,6 +143,7 @@ The built-in watchdog monitors gateway health and recovers from failures automat
+ | `GITHUB_WORKSPACE_REPO`           | Yes      | GitHub repo for workspace sync (e.g. `owner/repo`) |
+ | `TELEGRAM_BOT_TOKEN`              | Optional | Telegram bot token                                 |
+ | `DISCORD_BOT_TOKEN`               | Optional | Discord bot token                                  |
++| `WHATSAPP_OWNER_NUMBER`           | Optional | WhatsApp owner number in E.164 format (`+1555...`) |
+ | `WATCHDOG_AUTO_REPAIR`            | Optional | Enable auto-repair on crash (`true`/`false`)       |
+ | `WATCHDOG_NOTIFICATIONS_DISABLED` | Optional | Disable watchdog notifications (`true`/`false`)    |
+ | `PORT`                            | Optional | Server port (default `3000`)                       |
+@@ -156,7 +157,7 @@ AlphaClaw is a convenience wrapper — it intentionally trades some of OpenClaw'
+ | Area                    | What AlphaClaw does                                                                                                                   | Trade-off                                                                                              |
+ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+ | **Setup password**      | All gateway access is gated behind a single `SETUP_PASSWORD`. Brute-force protection is built in (exponential backoff lockout).       | Simpler than OpenClaw's pairing code flow, but the password must be strong.                            |
+-| **One-click pairing**   | Channel pairings (Telegram/Discord) can be approved from the Setup UI instead of the CLI.                                             | No terminal access required, but anyone with the setup password can approve pairings.                  |
++| **One-click pairing**   | Channel pairings (Telegram/Discord/WhatsApp) can be approved from the Setup UI instead of the CLI.                                    | No terminal access required, but anyone with the setup password can approve pairings.                  |
+ | **Auto CLI approval**   | The first CLI device pairing is auto-approved so you can connect without a second screen. Subsequent requests appear in the UI.       | Removes the manual pairing step for the initial CLI connection.                                        |
+ | **Query-string tokens** | Webhook URLs support `?token=<WEBHOOK_TOKEN>` for providers that don't support `Authorization` headers. Warnings are shown in the UI. | Tokens may appear in server logs and referrer headers. Use header auth when your provider supports it. |
+ | **Gateway token**       | `OPENCLAW_GATEWAY_TOKEN` is auto-generated and injected into the environment so the proxy can authenticate with the gateway.          | The token lives in the `.env` file on the server — standard for managed deployments but worth noting.  |
+diff --git a/lib/public/js/components/channels.js b/lib/public/js/components/channels.js
+index 303a4f0..3d887aa 100644
+--- a/lib/public/js/components/channels.js
++++ b/lib/public/js/components/channels.js
+@@ -3,10 +3,11 @@ import htm from 'https://esm.sh/htm';
+ import { Badge } from './badge.js';
+ const html = htm.bind(h);
+ 
+-const ALL_CHANNELS = ['telegram', 'discord'];
++const ALL_CHANNELS = ["telegram", "discord", "whatsapp"];
+ const kChannelMeta = {
+-  telegram: { label: 'Telegram', iconSrc: '/assets/icons/telegram.svg' },
+-  discord: { label: 'Discord', iconSrc: '/assets/icons/discord.svg' },
++  telegram: { label: "Telegram", iconSrc: "/assets/icons/telegram.svg" },
++  discord: { label: "Discord", iconSrc: "/assets/icons/discord.svg" },
++  whatsapp: { label: "WhatsApp", iconSrc: "" },
+ };
+ 
+ export function Channels({ channels, onSwitchTab, onNavigate }) {
+diff --git a/lib/public/js/components/onboarding/pairing-utils.js b/lib/public/js/components/onboarding/pairing-utils.js
+index b27e657..bfd1cb3 100644
+--- a/lib/public/js/components/onboarding/pairing-utils.js
++++ b/lib/public/js/components/onboarding/pairing-utils.js
+@@ -1,6 +1,7 @@
+ export const getPreferredPairingChannel = (vals = {}) => {
+   if (vals.TELEGRAM_BOT_TOKEN) return "telegram";
+   if (vals.DISCORD_BOT_TOKEN) return "discord";
++  if (vals.WHATSAPP_OWNER_NUMBER) return "whatsapp";
+   return "";
+ };
+ 
+diff --git a/lib/public/js/components/onboarding/welcome-config.js b/lib/public/js/components/onboarding/welcome-config.js
+index f23b95c..44d9871 100644
+--- a/lib/public/js/components/onboarding/welcome-config.js
++++ b/lib/public/js/components/onboarding/welcome-config.js
+@@ -121,8 +121,23 @@ export const kWelcomeGroups = [
+           >`,
+         placeholder: "MTQ3...",
+       },
++      {
++        key: "WHATSAPP_OWNER_NUMBER",
++        label: "WhatsApp Owner Number",
++        hint: html`In E.164 format (e.g.${" "}<code class="text-xs bg-black/30 px-1 rounded"
++            >+15551234567</code
++          >) ·${" "}<a
++            href="https://docs.openclaw.ai/channels/whatsapp"
++            target="_blank"
++            class="hover:underline"
++            style="color: var(--accent-link)"
++            >full guide</a
++          >`,
++        placeholder: "+15551234567",
++      },
+     ],
+-    validate: (vals) => !!(vals.TELEGRAM_BOT_TOKEN || vals.DISCORD_BOT_TOKEN),
++    validate: (vals) =>
++      !!(vals.TELEGRAM_BOT_TOKEN || vals.DISCORD_BOT_TOKEN || vals.WHATSAPP_OWNER_NUMBER),
+   },
+   {
+     id: "tools",
+diff --git a/lib/public/js/components/onboarding/welcome-pairing-step.js b/lib/public/js/components/onboarding/welcome-pairing-step.js
+index efff909..b3d9c4d 100644
+--- a/lib/public/js/components/onboarding/welcome-pairing-step.js
++++ b/lib/public/js/components/onboarding/welcome-pairing-step.js
+@@ -14,6 +14,10 @@ const kChannelMeta = {
+     label: "Discord",
+     iconSrc: "/assets/icons/discord.svg",
+   },
++  whatsapp: {
++    label: "WhatsApp",
++    iconSrc: "",
++  },
+ };
+ 
+ const PairingRow = ({ pairing, onApprove, onReject }) => {
+@@ -90,7 +94,7 @@ export const WelcomePairingStep = ({
+   if (!channel) {
+     return html`
+       <div class="bg-red-900/30 border border-red-800 rounded-xl p-3 text-red-300 text-sm">
+-        Missing channel configuration. Go back and add a Telegram or Discord bot token.
++        Missing channel configuration. Go back and add a Telegram, Discord, or WhatsApp channel.
+       </div>
+     `;
+   }
+@@ -155,7 +159,9 @@ export const WelcomePairingStep = ({
+                 />`
+               : null}
+             <p class="text-gray-300 text-sm">
+-              Send a message to your ${channelMeta.label} bot
++              ${channel === "whatsapp"
++                ? "Send a WhatsApp message from your owner number"
++                : `Send a message to your ${channelMeta.label} bot`}
+             </p>
+             <p class="text-gray-600 text-xs">
+               The pairing request will appear here in 5-10 seconds
+diff --git a/lib/public/js/components/welcome/use-welcome.js b/lib/public/js/components/welcome/use-welcome.js
+index 4c9fef0..dcf013c 100644
+--- a/lib/public/js/components/welcome/use-welcome.js
++++ b/lib/public/js/components/welcome/use-welcome.js
+@@ -271,7 +271,7 @@ export const useWelcome = ({ onComplete }) => {
+       const pairingChannel = getPreferredPairingChannel(normalizedVals);
+       if (!pairingChannel) {
+         throw new Error(
+-          "No Telegram or Discord bot token configured for pairing.",
++          "No Telegram, Discord, or WhatsApp channel configured for pairing.",
+         );
+       }
+       setVals((prev) => ({
+diff --git a/lib/server/constants.js b/lib/server/constants.js
+index e579f57..d79a7a4 100644
+--- a/lib/server/constants.js
++++ b/lib/server/constants.js
+@@ -231,6 +231,12 @@ const kKnownVars = [
+     group: "channels",
+     hint: "From Discord Developer Portal",
+   },
++  {
++    key: "WHATSAPP_OWNER_NUMBER",
++    label: "WhatsApp Owner Number",
++    group: "channels",
++    hint: "In E.164 format, e.g. +15551234567",
++  },
+   {
+     key: "MISTRAL_API_KEY",
+     label: "Mistral API Key",
+@@ -332,6 +338,7 @@ const API_TEST_COMMANDS = {
+ const kChannelDefs = {
+   telegram: { envKey: "TELEGRAM_BOT_TOKEN" },
+   discord: { envKey: "DISCORD_BOT_TOKEN" },
++  whatsapp: { envKey: "WHATSAPP_OWNER_NUMBER" },
+ };
+ const kProtectedBrowsePaths = new Set(
+   Array.isArray(kBrowseFilePolicies?.protectedPaths)
+diff --git a/lib/server/gateway.js b/lib/server/gateway.js
+index 79dc16e..8f89909 100644
+--- a/lib/server/gateway.js
++++ b/lib/server/gateway.js
+@@ -264,11 +264,63 @@ const syncChannelConfig = (savedVars, mode = "all") => {
+       savedVars.filter((v) => v.value).map((v) => [v.key, v.value]),
+     );
+     const env = gatewayEnv();
++    const addUnique = (list = [], value) => {
++      const next = new Set(Array.isArray(list) ? list : []);
++      if (value) next.add(value);
++      return Array.from(next);
++    };
++    const ensurePluginShell = () => {
++      if (!cfg.plugins) cfg.plugins = {};
++      if (!Array.isArray(cfg.plugins.allow)) cfg.plugins.allow = [];
++      if (!cfg.plugins.entries) cfg.plugins.entries = {};
++    };
+ 
+     for (const [ch, def] of Object.entries(kChannelDefs)) {
+       const token = savedMap[def.envKey];
+       const isConfigured = cfg.channels?.[ch]?.enabled;
+ 
++      if (ch === "whatsapp") {
++        if (token && !isConfigured && (mode === "add" || mode === "all")) {
++          console.log("[alphaclaw] Adding channel: whatsapp");
++          cfg.channels = cfg.channels || {};
++          cfg.channels.whatsapp = {
++            ...(cfg.channels.whatsapp || {}),
++            enabled: true,
++            dmPolicy: cfg.channels.whatsapp?.dmPolicy || "allowlist",
++            allowFrom: addUnique(cfg.channels.whatsapp?.allowFrom, token),
++            selfChatMode: cfg.channels.whatsapp?.selfChatMode ?? true,
++            groupPolicy: cfg.channels.whatsapp?.groupPolicy || "allowlist",
++            groupAllowFrom: addUnique(cfg.channels.whatsapp?.groupAllowFrom, token),
++          };
++          ensurePluginShell();
++          cfg.plugins.entries.whatsapp = {
++            ...(cfg.plugins.entries.whatsapp || {}),
++            enabled: true,
++          };
++          if (!cfg.plugins.allow.includes("whatsapp")) {
++            cfg.plugins.allow.push("whatsapp");
++          }
++          fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
++          console.log("[alphaclaw] Channel whatsapp added");
++        } else if (
++          !token &&
++          isConfigured &&
++          (mode === "remove" || mode === "all")
++        ) {
++          console.log("[alphaclaw] Removing channel: whatsapp");
++          delete cfg.channels.whatsapp;
++          if (cfg.plugins?.entries) {
++            delete cfg.plugins.entries.whatsapp;
++          }
++          if (Array.isArray(cfg.plugins?.allow)) {
++            cfg.plugins.allow = cfg.plugins.allow.filter((name) => name !== "whatsapp");
++          }
++          fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
++          console.log("[alphaclaw] Channel whatsapp removed");
++        }
++        continue;
++      }
++
+       if (token && !isConfigured && (mode === "add" || mode === "all")) {
+         console.log(`[alphaclaw] Adding channel: ${ch}`);
+         try {
+@@ -323,7 +375,7 @@ const getChannelStatus = () => {
+     const credDir = `${OPENCLAW_DIR}/credentials`;
+     const channels = {};
+ 
+-    for (const ch of ["telegram", "discord"]) {
++    for (const ch of ["telegram", "discord", "whatsapp"]) {
+       if (!config.channels?.[ch]?.enabled) continue;
+       if (!process.env[kChannelDefs[ch].envKey]) continue;
+ 
+diff --git a/lib/server/onboarding/import/secret-detector.js b/lib/server/onboarding/import/secret-detector.js
+index e092c58..0f6b35e 100644
+--- a/lib/server/onboarding/import/secret-detector.js
++++ b/lib/server/onboarding/import/secret-detector.js
+@@ -311,6 +311,18 @@ const extractPreFillValues = ({ fs, baseDir, configFiles = [] }) => {
+       if (channels.discord?.token && !isAlreadyEnvRef(channels.discord.token)) {
+         preFill.DISCORD_BOT_TOKEN = channels.discord.token;
+       }
++      const whatsappAllowFrom = Array.isArray(channels.whatsapp?.allowFrom)
++        ? channels.whatsapp.allowFrom.find(
++            (entry) =>
++              typeof entry === "string" &&
++              entry.trim() &&
++              entry.trim() !== "*" &&
++              !isAlreadyEnvRef(entry),
++          )
++        : "";
++      if (whatsappAllowFrom) {
++        preFill.WHATSAPP_OWNER_NUMBER = whatsappAllowFrom;
++      }
+ 
+       const braveKey = cfg.tools?.web?.search?.apiKey;
+       if (braveKey && !isAlreadyEnvRef(braveKey)) {
+diff --git a/lib/server/onboarding/openclaw.js b/lib/server/onboarding/openclaw.js
+index 8f90d17..d89a526 100644
+--- a/lib/server/onboarding/openclaw.js
++++ b/lib/server/onboarding/openclaw.js
+@@ -169,6 +169,12 @@ const getSafeImportedDmPolicy = (channelConfig = {}) => {
+   return channelConfig?.dmPolicy || "pairing";
+ };
+ 
++const mergeAllowFrom = (existing = [], addition) => {
++  const merged = new Set(Array.isArray(existing) ? existing : []);
++  if (addition) merged.add(addition);
++  return Array.from(merged);
++};
++
+ const applyFreshOnboardingChannels = ({ cfg, varMap }) => {
+   if (varMap.TELEGRAM_BOT_TOKEN) {
+     cfg.channels.telegram = {
+@@ -192,6 +198,19 @@ const applyFreshOnboardingChannels = ({ cfg, varMap }) => {
+     ensurePluginAllowed(cfg, "discord");
+     console.log("[onboard] Discord configured");
+   }
++  if (varMap.WHATSAPP_OWNER_NUMBER) {
++    cfg.channels.whatsapp = {
++      enabled: true,
++      dmPolicy: "allowlist",
++      allowFrom: [varMap.WHATSAPP_OWNER_NUMBER],
++      selfChatMode: true,
++      groupPolicy: "allowlist",
++      groupAllowFrom: [varMap.WHATSAPP_OWNER_NUMBER],
++    };
++    cfg.plugins.entries.whatsapp = { enabled: true };
++    ensurePluginAllowed(cfg, "whatsapp");
++    console.log("[onboard] WhatsApp configured");
++  }
+   if (!cfg.plugins.load.paths.includes(kUsageTrackerPluginPath)) {
+     cfg.plugins.load.paths.push(kUsageTrackerPluginPath);
+   }
+@@ -268,6 +287,29 @@ const writeManagedImportOpenclawConfig = ({ fs, openclawDir, varMap }) => {
+     ensurePluginAllowed(cfg, "discord");
+   }
+ 
++  if (varMap.WHATSAPP_OWNER_NUMBER) {
++    cfg.channels.whatsapp = {
++      ...(cfg.channels.whatsapp || {}),
++      enabled: true,
++      dmPolicy: cfg.channels.whatsapp?.dmPolicy || "allowlist",
++      allowFrom: mergeAllowFrom(
++        cfg.channels.whatsapp?.allowFrom,
++        "${WHATSAPP_OWNER_NUMBER}",
++      ),
++      selfChatMode: cfg.channels.whatsapp?.selfChatMode ?? true,
++      groupPolicy: cfg.channels.whatsapp?.groupPolicy || "allowlist",
++      groupAllowFrom: mergeAllowFrom(
++        cfg.channels.whatsapp?.groupAllowFrom,
++        "${WHATSAPP_OWNER_NUMBER}",
++      ),
++    };
++    cfg.plugins.entries.whatsapp = {
++      ...(cfg.plugins.entries.whatsapp || {}),
++      enabled: true,
++    };
++    ensurePluginAllowed(cfg, "whatsapp");
++  }
++
+   fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
+ };
+ 
+diff --git a/lib/server/onboarding/validation.js b/lib/server/onboarding/validation.js
+index e61c08d..7c4d3e7 100644
+--- a/lib/server/onboarding/validation.js
++++ b/lib/server/onboarding/validation.js
+@@ -61,7 +61,11 @@ const validateOnboardingInput = ({ vars, modelKey, resolveModelProvider, hasCode
+       ? hasAiByProvider[selectedProvider]
+       : hasAnyAi;
+   const hasGithub = !!(githubToken && githubRepoInput);
+-  const hasChannel = !!(varMap.TELEGRAM_BOT_TOKEN || varMap.DISCORD_BOT_TOKEN);
++  const hasChannel = !!(
++    varMap.TELEGRAM_BOT_TOKEN ||
++    varMap.DISCORD_BOT_TOKEN ||
++    varMap.WHATSAPP_OWNER_NUMBER
++  );
+ 
+   if (!hasAi) {
+     if (selectedProvider === "openai-codex") {
+diff --git a/lib/server/routes/pairings.js b/lib/server/routes/pairings.js
+index 35c1d58..ee67702 100644
+--- a/lib/server/routes/pairings.js
++++ b/lib/server/routes/pairings.js
+@@ -28,11 +28,11 @@ const registerPairingRoutes = ({ app, clawCmd, isOnboarded, fsModule = fs, openc
+     }
+ 
+     const pending = [];
+-    const channels = ["telegram", "discord"];
++    const channels = ["telegram", "discord", "whatsapp"];
+ 
+     for (const ch of channels) {
+       try {
+-        const config = JSON.parse(fs.readFileSync(`${OPENCLAW_DIR}/openclaw.json`, "utf8"));
++        const config = JSON.parse(fsModule.readFileSync(`${openclawDir}/openclaw.json`, "utf8"));
+         if (!config.channels?.[ch]?.enabled) continue;
+       } catch {
+         continue;
+diff --git a/tests/frontend/pairing-utils.test.js b/tests/frontend/pairing-utils.test.js
+index e5cbb28..876418a 100644
+--- a/tests/frontend/pairing-utils.test.js
++++ b/tests/frontend/pairing-utils.test.js
+@@ -25,6 +25,14 @@ describe("frontend/onboarding/pairing-utils", () => {
+     expect(getPreferredPairingChannel({})).toBe("");
+   });
+ 
++  it("falls back to whatsapp when telegram and discord are missing", () => {
++    const channel = getPreferredPairingChannel({
++      WHATSAPP_OWNER_NUMBER: "+15551234567",
++    });
++
++    expect(channel).toBe("whatsapp");
++  });
++
+   it("treats channel as paired only when status is paired and count > 0", () => {
+     const channels = {
+       telegram: { status: "paired", paired: 1 },
+diff --git a/tests/server/onboarding-openclaw.test.js b/tests/server/onboarding-openclaw.test.js
+index 2bfb418..8bba52c 100644
+--- a/tests/server/onboarding-openclaw.test.js
++++ b/tests/server/onboarding-openclaw.test.js
+@@ -108,4 +108,40 @@ describe("server/onboarding/openclaw", () => {
+     expect(next.channels.discord.dmPolicy).toBe("pairing");
+     expect(next.channels.discord.token).toBe("${DISCORD_BOT_TOKEN}");
+   });
++
++  it("configures whatsapp owner allowlist during import wiring", () => {
++    const openclawDir = createTempOpenclawDir();
++    const configPath = path.join(openclawDir, "openclaw.json");
++    fs.writeFileSync(
++      configPath,
++      JSON.stringify(
++        {
++          plugins: { allow: [], load: { paths: [] }, entries: {} },
++          channels: {
++            whatsapp: {
++              enabled: false,
++              allowFrom: [],
++            },
++          },
++        },
++        null,
++        2,
++      ),
++      "utf8",
++    );
++
++    writeManagedImportOpenclawConfig({
++      fs,
++      openclawDir,
++      varMap: { WHATSAPP_OWNER_NUMBER: "+15551234567" },
++    });
++
++    const next = JSON.parse(fs.readFileSync(configPath, "utf8"));
++    expect(next.channels.whatsapp.enabled).toBe(true);
++    expect(next.channels.whatsapp.allowFrom).toContain("${WHATSAPP_OWNER_NUMBER}");
++    expect(next.channels.whatsapp.groupAllowFrom).toContain(
++      "${WHATSAPP_OWNER_NUMBER}",
++    );
++    expect(next.plugins.entries.whatsapp).toEqual({ enabled: true });
++  });
+ });
+diff --git a/tests/server/routes-onboarding.test.js b/tests/server/routes-onboarding.test.js
+index 1fae056..4dca8d1 100644
+--- a/tests/server/routes-onboarding.test.js
++++ b/tests/server/routes-onboarding.test.js
+@@ -35,6 +35,7 @@ const createBaseDeps = ({ onboarded = false, hasCodexOauth = false } = {}) => {
+         "GITHUB_TOKEN",
+         "GITHUB_WORKSPACE_REPO",
+         "TELEGRAM_BOT_TOKEN",
++        "WHATSAPP_OWNER_NUMBER",
+         "SLACK_BOT_TOKEN",
+       ]),
+     },
+@@ -82,6 +83,16 @@ const makeValidBody = () => ({
+   ],
+ });
+ 
++const makeValidWhatsappBody = () => ({
++  modelKey: "openai/gpt-5.1-codex",
++  vars: [
++    { key: "OPENAI_API_KEY", value: "sk-test-123456789" },
++    { key: "GITHUB_TOKEN", value: "ghp_test_123456789" },
++    { key: "GITHUB_WORKSPACE_REPO", value: "owner/repo" },
++    { key: "WHATSAPP_OWNER_NUMBER", value: "+15551234567" },
++  ],
++});
++
+ const mockGithubVerifyAndCreate = ({
+   repoStatus = 404,
+   repoOk = false,
+@@ -362,6 +373,40 @@ describe("server/routes/onboarding", () => {
+     });
+   });
+ 
++  it("supports whatsapp-only channel onboarding", async () => {
++    const deps = createBaseDeps();
++    deps.fs.readFileSync.mockImplementation((p) => {
++      if (p === "/tmp/openclaw/openclaw.json") return "{}";
++      if (p === path.join(kSetupDir, "skills", "control-ui", "SKILL.md")) return "BASE={{BASE_URL}}";
++      if (p === path.join(kSetupDir, "core-prompts", "TOOLS.md")) return "Setup: {{SETUP_UI_URL}}";
++      if (p === path.join(kSetupDir, "hourly-git-sync.sh")) return "echo Auto-commit hourly sync";
++      return "{}";
++    });
++    const app = createApp(deps);
++    mockGithubVerifyAndCreate();
++
++    const res = await request(app).post("/api/onboard").send(makeValidWhatsappBody());
++
++    expect(res.status).toBe(200);
++    expect(res.body).toEqual({ ok: true });
++    const openclawWriteCalls = deps.fs.writeFileSync.mock.calls.filter(
++      ([targetPath]) => targetPath === "/tmp/openclaw/openclaw.json",
++    );
++    const openclawWriteCall = openclawWriteCalls[openclawWriteCalls.length - 1];
++    expect(openclawWriteCall).toBeTruthy();
++    const writtenConfig = JSON.parse(openclawWriteCall[1]);
++    expect(writtenConfig.channels.whatsapp).toEqual(
++      expect.objectContaining({
++        enabled: true,
++        dmPolicy: "allowlist",
++        allowFrom: ["+15551234567"],
++        groupPolicy: "allowlist",
++        groupAllowFrom: ["+15551234567"],
++      }),
++    );
++    expect(writtenConfig.plugins.entries.whatsapp).toEqual({ enabled: true });
++  });
++
+   it("rejects onboarding when workspace repo already exists", async () => {
+     const deps = createBaseDeps();
+     deps.fs.readFileSync.mockImplementation((p) => {
+diff --git a/tests/server/routes-pairings.test.js b/tests/server/routes-pairings.test.js
+index 34e39c9..16134a3 100644
+--- a/tests/server/routes-pairings.test.js
++++ b/tests/server/routes-pairings.test.js
+@@ -17,6 +17,43 @@ const createApp = ({ clawCmd, isOnboarded, fsModule }) => {
+ };
+ 
+ describe("server/routes/pairings", () => {
++  it("lists pending whatsapp pairing requests when channel is enabled", async () => {
++    const clawCmd = vi.fn(async (cmd) => {
++      if (cmd === "pairing list whatsapp") {
++        return { ok: true, stdout: "Pending pairing code: ABCD1234\n", stderr: "" };
++      }
++      if (cmd === "pairing list telegram" || cmd === "pairing list discord") {
++        return { ok: true, stdout: "", stderr: "" };
++      }
++      return { ok: true, stdout: "{}", stderr: "" };
++    });
++    const fsModule = {
++      existsSync: vi.fn(() => false),
++      mkdirSync: vi.fn(),
++      writeFileSync: vi.fn(),
++      readFileSync: vi.fn(() =>
++        JSON.stringify({
++          channels: {
++            whatsapp: { enabled: true },
++          },
++        }),
++      ),
++    };
++    const app = createApp({
++      clawCmd,
++      isOnboarded: () => true,
++      fsModule,
++    });
++
++    const res = await request(app).get("/api/pairings");
++
++    expect(res.status).toBe(200);
++    expect(res.body.pending).toEqual([
++      { id: "ABCD1234", code: "ABCD1234", channel: "whatsapp" },
++    ]);
++    expect(clawCmd).toHaveBeenCalledWith("pairing list whatsapp", { quiet: true });
++  });
++
+   it("auto-approves the first pending CLI device request when marker is absent", async () => {
+     const clawCmd = vi.fn(async (cmd) => {
+       if (cmd === "devices list --json") {
+diff --git a/tests/server/secret-detector.test.js b/tests/server/secret-detector.test.js
+index b868f70..112705e 100644
+--- a/tests/server/secret-detector.test.js
++++ b/tests/server/secret-detector.test.js
+@@ -324,6 +324,7 @@ describe("secret-detector", () => {
+         channels: {
+           telegram: { botToken: "123:AAH" },
+           discord: { token: "MTQ3xyz" },
++          whatsapp: { allowFrom: ["+15551234567"] },
+         },
+         tools: {
+           web: { search: { apiKey: "BSAabc" } },
+@@ -341,6 +342,7 @@ describe("secret-detector", () => {
+       expect(preFill.ANTHROPIC_API_KEY).toBe("sk-ant-abc");
+       expect(preFill.TELEGRAM_BOT_TOKEN).toBe("123:AAH");
+       expect(preFill.DISCORD_BOT_TOKEN).toBe("MTQ3xyz");
++      expect(preFill.WHATSAPP_OWNER_NUMBER).toBe("+15551234567");
+       expect(preFill.BRAVE_API_KEY).toBe("BSAabc");
+     });
+ 
+@@ -365,6 +367,7 @@ describe("secret-detector", () => {
+       const fs = createMockFs({
+         "/base/channels.json": JSON.stringify({
+           discord: { token: "MTQ3xyz" },
++          whatsapp: { allowFrom: ["+15557654321"] },
+         }),
+       });
+       const preFill = extractPreFillValues({
+@@ -373,6 +376,7 @@ describe("secret-detector", () => {
+         configFiles: ["channels.json"],
+       });
+       expect(preFill.DISCORD_BOT_TOKEN).toBe("MTQ3xyz");
++      expect(preFill.WHATSAPP_OWNER_NUMBER).toBe("+15557654321");
+     });
+   });
+ 
